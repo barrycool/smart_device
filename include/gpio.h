@@ -157,6 +157,17 @@ typedef struct {
     else gpio_output_conf(0, gpio_bits, gpio_bits, 0)
 
 /**  
+  * @brief   Get GPIO pin output level.
+  *
+  * @param   gpio_bits : The GPIO bit number.
+  * @param   bit_value : GPIO pin output level.
+  *
+  * @return  null
+  */
+#define GPIO_GET_OUTPUT(gpio_bits) \
+    (GPIO_REG_READ(GPIO_OUT_ADDRESS) & gpio_bits)
+
+/**
   * @brief   Disable GPIO pin output.
   * 
   * @param   gpio_no : The GPIO sequence number.

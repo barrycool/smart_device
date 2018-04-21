@@ -32,14 +32,14 @@
 #include "lwip/netdb.h"
 #include "espressif/espconn.h"
 #include "cjson.h"
-#include "gpio.h"
+#include "../include/gpio.h"
 
 #define server_ip "192.168.101.142"
 #define server_port 9669
 
-#define GPIO_LED_STATUS GPIO_Pin_2
-#define GPIO_LED_ON 0
-#define GPIO_LED_OFF 0
+#define GPIO_SWITCH GPIO_Pin_2
+#define GPIO_SWITCH_ON 0
+#define GPIO_SWITCH_OFF 1
 
 /******************************************************************************
  * FunctionName : user_rf_cal_sector_set
@@ -215,6 +215,49 @@ void smartconfig_done(sc_status status, void *pdata)
     }
 }
 
+char * get_switch_status(void)
+{
+	if (GPIO_GET_OUTPUT(GPIO_SWITCH) == GPIO_SWITCH_ON) {
+		return "ON";
+	}
+	else
+	{
+		return "OFF";
+	}
+}
+
+char * requestHeader =
+		"POST /smartdevice_cloud_service/connect HTTP/1.1\r\n"
+		"Host: www.ai-keys.com:8080\r\n"
+		"User-Agent: curl/7.47.0\r\n"
+		"Accept: */*\r\n"
+		"Content-Length: %d\r\n"
+		"Content-Type: application/x-www-form-urlencoded\r\n"
+		"\r\n"
+		"%s";
+
+char * reportState_template =
+		"{"
+			"'name_space':'Alexa',"
+			"'name':'ReportState',"
+			"'deviceId':'%s',"
+			"'properties':["
+				"{'name_space':'Alexa.PowerController','name':'powerState','value':'%s'},"
+				"{'name_space':'Alexa.EndpointHealth','name':'connectivity','value':{'value':'OK'}}"
+			"]"
+		"}";
+
+char *powerController_template =
+		"{"
+			"'name_space':'Alexa',"
+			"'name':'Response',"
+			"'deviceId':'%s',"
+			"'properties':["
+				"{'name_space':'Alexa.PowerController','name':'powerState','value':'%s'},"
+				"{'name_space':'Alexa.EndpointHealth','name':'connectivity','value':{'value':'OK'}}"
+			"]"
+		"}";
+
 char buf[1024];
 char device_id_str[13];
 uint16_t buf_len;
@@ -228,7 +271,12 @@ LOCAL void tcp_task(void *pvParameters)
 	cJSON *cjsonTmp;
 	char * tmp;
 
-	/*struct station_config *config = zalloc(sizeof(struct station_config));
+	wifi_get_macaddr(0, buf);
+	sprintf(device_id_str, "%02X%02X%02X%02X%02X%02X", buf[0], buf[1],
+			buf[2], buf[3], buf[4], buf[5]);
+	printf("mac: %s\n", device_id_str);
+
+	struct station_config *config = zalloc(sizeof(struct station_config));
 
 	wifi_station_get_config(config);
 	printf("auto connect %d\n", wifi_station_get_auto_connect());
@@ -236,29 +284,18 @@ LOCAL void tcp_task(void *pvParameters)
 	wifi_station_get_config_default(config);
 	printf("config: %s %s %d\n", config->ssid, config->password, config->bssid_set);
 
-	//sprintf(config->ssid, "yangliu");
-	//sprintf(config->password, "yangliujiezou");
-	sprintf(config->ssid, "");
-	sprintf(config->password, "");
-
-	wifi_station_set_config(config);
-
 	if (!strlen(config->ssid))
 		smartconfig_start(smartconfig_done);
 
-	free(config);*/
+	free(config);
 
-	//wifi_station_scan(NULL, scan_done);
+	/*//wifi_station_scan(NULL, scan_done);
 	//vTaskDelay(500);
 	/*GPIO_OUTPUT_SET(2, 0);
 	vTaskDelay(100);
 	GPIO_OUTPUT_SET(2, 1);
 	vTaskDelay(100);*/
 	//smartconfig_start(smartconfig_done);
-	wifi_get_macaddr(0, buf);
-	sprintf(device_id_str, "%02X%02X%02X%02X%02X%02X", buf[0], buf[1],
-			buf[2], buf[3], buf[4], buf[5]);
-	printf("mac: %s\n", device_id_str);
 
 	while(1)
 	{
@@ -334,33 +371,16 @@ LOCAL void tcp_task(void *pvParameters)
 			continue;
 		}
 
-		char * requestHeader =
-				"POST /smartdevice_cloud_service/connect HTTP/1.1\r\n"
-				"Host: www.ai-keys.com:8080\r\n"
-				"User-Agent: curl/7.47.0\r\n"
-				"Accept: */*\r\n"
-				"Content-Length: %d\r\n"
-				"Content-Type: application/x-www-form-urlencoded\r\n"
-				"\r\n"
-				"%s";
-
-		char * reportState_template =
-				"{"
-					"'name_space':'Alexa',"
-					"'name':'ReportState',"
-					"'deviceId':'%s',"
-					"'properties':["
-						"{'name_space':'Alexa.PowerController','name':'powerState','value':'%s'},"
-						"{'name_space':'Alexa.EndpointHealth','name':'connectivity','value':{'value':'OK'}}"
-					"]"
-				"}";
-
-		char * reportState = malloc(200);
-		uint16_t reportStateLen = sprintf(buf, reportState_template, device_id_str, GPIO_INPUT_GET(GPIO_LED_STATUS));
+		char * reportState = malloc(300);
+		uint16_t reportStateLen = sprintf(reportState, reportState_template, device_id_str, get_switch_status());
 
 		buf_len = sprintf(buf, requestHeader, strlen(reportState), reportState);
 
-		send(fd, reportState, strlen(reportState), 0);
+		free(reportState);
+
+		printf("ss: %s\n", buf);
+
+		send(fd, buf, buf_len, 0);
 
 		while(1)
 		{
@@ -376,12 +396,17 @@ LOCAL void tcp_task(void *pvParameters)
 							printf("name: %s\n", cjsonTmp->valuestring);
 							if (strcmp(cjsonTmp->valuestring, "TurnOn") == 0) {
 								GPIO_OUTPUT_SET(2, 0);
+								buf_len = sprintf(buf, powerController_template, device_id_str, get_switch_status());
+								printf("%d %s\n", buf_len, buf);
 							}
 							else if (strcmp(cjsonTmp->valuestring, "TurnOff") == 0){
 								GPIO_OUTPUT_SET(2, 1);
+								buf_len = sprintf(buf, powerController_template, device_id_str, get_switch_status());
+								printf("%d %s\n", buf_len, buf);
 							}
 							else if (strcmp(cjsonTmp->valuestring, "ReportState") == 0){
-
+								reportStateLen = sprintf(buf, reportState_template, device_id_str, get_switch_status());
+								printf("%d %s\n", buf_len, buf);
 							}
 						}
 
@@ -392,6 +417,7 @@ LOCAL void tcp_task(void *pvParameters)
 			else
 			{
 				printf("recv fail %d\n", buf_len);
+				close(fd);
 				break;
 			}
 		}
@@ -414,7 +440,7 @@ user_init(void)
 
     PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO2_U, FUNC_GPIO2);
     //GPIO_OUTPUT_SET(2, 0);
-    GPIO_OUTPUT(GPIO_LED_STATUS, 0);
+    GPIO_OUTPUT(GPIO_SWITCH, 0);
 
     wifi_set_opmode(STATION_MODE);
     wifi_set_event_handler_cb(wifi_handle_event_cb);
