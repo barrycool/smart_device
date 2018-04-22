@@ -34,8 +34,8 @@
 #include "cjson.h"
 #include "../include/gpio.h"
 
-#define server_ip "192.168.101.142"
-#define server_port 9669
+#define DEVICE_TYPE "SMARTPLUG"
+#define MANU_NAME "Ai-keys"
 
 #define GPIO_SWITCH GPIO_Pin_2
 #define GPIO_SWITCH_ON 0
@@ -226,6 +226,7 @@ char * get_switch_status(void)
 	}
 }
 
+#if 0
 char * requestHeader =
 		"POST /smartdevice_cloud_service/connect HTTP/1.1\r\n"
 		"Host: www.ai-keys.com:8080\r\n"
@@ -235,6 +236,7 @@ char * requestHeader =
 		"Content-Type: application/x-www-form-urlencoded\r\n"
 		"\r\n"
 		"%s";
+#endif
 
 char * reportState_template =
 		"{"
@@ -361,7 +363,7 @@ LOCAL void tcp_task(void *pvParameters)
 
 		server_addr.sin_family = AF_INET;
 		server_addr.sin_addr.s_addr = *(in_addr_t*)h->h_addr_list[0]; //inet_addr("192.168.3.55");
-		server_addr.sin_port = htons(8080);
+		server_addr.sin_port = htons(12345);
 
 		ret = connect(fd, (const struct sockaddr *)&server_addr, sizeof(struct sockaddr));
 		if (ret) {
@@ -371,14 +373,8 @@ LOCAL void tcp_task(void *pvParameters)
 			continue;
 		}
 
-		char * reportState = malloc(300);
-		uint16_t reportStateLen = sprintf(reportState, reportState_template, device_id_str, get_switch_status());
-
-		buf_len = sprintf(buf, requestHeader, strlen(reportState), reportState);
-
-		free(reportState);
-
-		printf("ss: %s\n", buf);
+		buf_len = sprintf(buf, reportState_template, device_id_str, get_switch_status());
+		printf("reportState: %s\n", buf);
 
 		send(fd, buf, buf_len, 0);
 
@@ -396,17 +392,22 @@ LOCAL void tcp_task(void *pvParameters)
 							printf("name: %s\n", cjsonTmp->valuestring);
 							if (strcmp(cjsonTmp->valuestring, "TurnOn") == 0) {
 								GPIO_OUTPUT_SET(2, 0);
+								//buf_len = sprintf(buf + 600, powerController_template, device_id_str, get_switch_status());
+								//buf_len = sprintf(buf, requestHeader, buf_len, buf + 600);
 								buf_len = sprintf(buf, powerController_template, device_id_str, get_switch_status());
 								printf("%d %s\n", buf_len, buf);
+								send(fd, buf, buf_len, 0);
 							}
 							else if (strcmp(cjsonTmp->valuestring, "TurnOff") == 0){
 								GPIO_OUTPUT_SET(2, 1);
 								buf_len = sprintf(buf, powerController_template, device_id_str, get_switch_status());
 								printf("%d %s\n", buf_len, buf);
+								send(fd, buf, buf_len, 0);
 							}
 							else if (strcmp(cjsonTmp->valuestring, "ReportState") == 0){
-								reportStateLen = sprintf(buf, reportState_template, device_id_str, get_switch_status());
+								buf_len = sprintf(buf, reportState_template, device_id_str, get_switch_status());
 								printf("%d %s\n", buf_len, buf);
+								send(fd, buf, buf_len, 0);
 							}
 						}
 
@@ -426,6 +427,77 @@ LOCAL void tcp_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
+char *device_info =
+	"{"
+		"'name_space':'Alexa',"
+		"'name':'DeviceInfo',"
+		"'deviceId':'%s',"
+		"'deviceType':'%s',"
+		"'manufacturerName':'%s'"
+	"}";
+
+LOCAL void tcp_server(void *pvParameters)
+{
+	struct sockaddr_in server_addr;
+	int ret;
+	int fd;
+	int cfd;
+	char * info;
+	uint16_t info_len;
+
+	while(1)
+	{
+		if (wifi_station_get_connect_status() != STATION_GOT_IP)
+		{
+			vTaskDelay(100);
+			continue;
+		}
+
+		fd = socket(AF_INET, SOCK_STREAM, 0);
+		if (fd == -1)
+		{
+			close(fd);
+			printf("error: socket\n");
+			vTaskDelay(200);
+			continue;
+		}
+
+		server_addr.sin_family = AF_INET;
+		server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+		server_addr.sin_port = htons(55555);
+
+		ret = bind(fd, (const struct sockaddr *)&server_addr, sizeof(struct sockaddr));
+		if (ret) {
+			printf("connect fail retry %d\n", ret);
+			close(fd);
+			vTaskDelay(200);
+			continue;
+		}
+
+		ret = listen(fd, 2);
+		if (ret) {
+			printf("connect fail retry %d\n", ret);
+			close(fd);
+			vTaskDelay(200);
+			continue;
+		}
+
+		while(1) {
+			cfd = accept(fd, NULL, NULL);
+			info = malloc(200);
+			info_len = sprintf(info, device_info, device_id_str, DEVICE_TYPE, MANU_NAME);
+			printf("device info: %s\n", info);
+			send(cfd, info, info_len, 0);
+			free(info);
+			close(cfd);
+		}
+
+		close(fd);
+	}
+
+    vTaskDelete(NULL);
+}
+
 /******************************************************************************
  * FunctionName : user_init
  * Description  : entry of user application, init user function here
@@ -439,7 +511,6 @@ user_init(void)
     printf("SDK version:%s 0x%X\n", system_get_sdk_version(), system_get_chip_id());
 
     PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO2_U, FUNC_GPIO2);
-    //GPIO_OUTPUT_SET(2, 0);
     GPIO_OUTPUT(GPIO_SWITCH, 0);
 
     wifi_set_opmode(STATION_MODE);
@@ -448,5 +519,6 @@ user_init(void)
     smartconfig_set_type(SC_TYPE_ESPTOUCH);
 
     xTaskCreate(tcp_task, "tcp_task", 1024, NULL, 4, NULL);
+    xTaskCreate(tcp_server, "tcp_server", 256, NULL, 4, NULL);
 }
 
